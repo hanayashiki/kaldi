@@ -1,22 +1,10 @@
+//我改的部分都用zhangfeifan进行注释了，想只看差别的可搜索此关键字进行这部分的查看
+//思路
+//从OnlineNnet2FeaturePipelineConfig->OnlineNnet2FeaturePipelineInfo
+//->OnlineNnet2FeaturePipeline
+//主要修改两处，一是看读入的config文件中有没有cmvn处理；二是在构造函数中，判断若有cmvn配置，则进行特征提取
 // online2/online-nnet2-feature-pipeline.cc
-
-// Copyright    2013  Johns Hopkins University (author: Daniel Povey)
-
-// See ../../COPYING for clarification regarding multiple authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-// THIS CODE IS PROVIDED *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY IMPLIED
-// WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
-// MERCHANTABLITY OR NON-INFRINGEMENT.
-// See the Apache 2 License for the specific language governing permissions and
-// limitations under the License.
-
+// Copyright 2013-2014   Johns Hopkins University (author: Daniel Povey)
 #include "online2/online-nnet2-feature-pipeline.h"
 #include "transform/cmvn.h"
 
@@ -65,6 +53,17 @@ OnlineNnet2FeaturePipelineInfo::OnlineNnet2FeaturePipelineInfo(
                  << "since you did not supply --add-pitch option.";
   }  // else use the defaults.
 
+  //zhangfeifan start
+  //判断是否有cmvn的config文件
+   if (config.cmvn_config != "") {
+    ReadConfigFromFile(config.cmvn_config, &cmvn_opts);
+      global_cmvn_stats_rxfilename = config.global_cmvn_stats_rxfilename;
+    if (global_cmvn_stats_rxfilename == "")
+    KALDI_ERR << "--global-cmvn-stats option is required.";
+  }  // else use the defaults.
+
+  //zhangfeifan end
+
   if (config.ivector_extraction_config != "") {
     use_ivectors = true;
     OnlineIvectorExtractionConfig ivector_extraction_opts;
@@ -75,10 +74,14 @@ OnlineNnet2FeaturePipelineInfo::OnlineNnet2FeaturePipelineInfo(
     use_ivectors = false;
   }
 }
-
+//构造函数同-->Online-feature的init()
 OnlineNnet2FeaturePipeline::OnlineNnet2FeaturePipeline(
     const OnlineNnet2FeaturePipelineInfo &info):
     info_(info) {
+//zhangfeifan start
+  if(info_.global_cmvn_stats_rxfilename!="")
+      ReadKaldiObject(info_.global_cmvn_stats_rxfilename,&global_cmvn_stats_);
+//zhangfeifan end
   if (info_.feature_type == "mfcc") {
     base_feature_ = new OnlineMfcc(info_.mfcc_opts);
   } else if (info_.feature_type == "plp") {
@@ -89,16 +92,50 @@ OnlineNnet2FeaturePipeline::OnlineNnet2FeaturePipeline(
     KALDI_ERR << "Code error: invalid feature type " << info_.feature_type;
   }
 
+  //zhangfeifan start
+  {
+      if(global_cmvn_stats_.NumRows() != 0){
+      if (info_.add_pitch){
+          int32 global_dim = global_cmvn_stats_.NumCols() - 1;
+          int32 dim = base_feature_->Dim();
+          KALDI_ASSERT(global_dim >= dim);
+          if (global_dim > dim){
+              Matrix<BaseFloat> last_col(global_cmvn_stats_.ColRange(global_dim, 1));
+              global_cmvn_stats_.Resize(global_cmvn_stats_.NumRows(), dim + 1,
+                                  kCopyData);
+              global_cmvn_stats_.ColRange(dim, 1).CopyFromMat(last_col);
+          }
+      }
+      Matrix<double> global_cmvn_stats_dbl(global_cmvn_stats_);
+      OnlineCmvnState initial_state(global_cmvn_stats_dbl);
+      cmvn_ = new OnlineCmvn(info_.cmvn_opts, initial_state, base_feature_);//构造函数会加上该特征
+        }
+  }
+
+  //zhngfeifan end
+
   if (info_.add_pitch) {
     pitch_ = new OnlinePitchFeature(info_.pitch_opts);
     pitch_feature_ = new OnlineProcessPitch(info_.pitch_process_opts,
                                             pitch_);
-    feature_plus_optional_pitch_ = new OnlineAppendFeature(base_feature_,
-                                                           pitch_feature_);
+    if(global_cmvn_stats_.NumRows() != 0)
+    {
+            feature_plus_optional_pitch_ = new OnlineAppendFeature(cmvn_,
+                                                           pitch_feature_);//zhangfeifan
+    }
+    else
+    {
+        feature_plus_optional_pitch_ = new OnlineAppendFeature(base_feature_,
+                                                           pitch_feature_);//zhangfeifan
+    }
+    
   } else {
     pitch_ = NULL;
     pitch_feature_ = NULL;
-    feature_plus_optional_pitch_ = base_feature_;
+    if(global_cmvn_stats_.NumRows() != 0)
+            feature_plus_optional_pitch_ = cmvn_;//zhangfeian
+    else
+        feature_plus_optional_pitch_ = base_feature_;
   }
 
   if (info_.use_ivectors) {
@@ -128,6 +165,7 @@ void OnlineNnet2FeaturePipeline::GetFrame(int32 frame,
   return final_feature_->GetFrame(frame, feat);
 }
 
+//SetAdaptationState是ivector的自适应，应用cmvn的
 void OnlineNnet2FeaturePipeline::SetAdaptationState(
     const OnlineIvectorExtractorAdaptationState &adaptation_state) {
   if (info_.use_ivectors) {
@@ -143,20 +181,38 @@ void OnlineNnet2FeaturePipeline::GetAdaptationState(
   }
   // else silently do nothing, as there is nothing to do.
 }
+//zhangfeifan start
+void OnlineNnet2FeaturePipeline::SetCmvnState(const OnlineCmvnState &cmvn_state) {
+  cmvn_->SetState(cmvn_state);
+}
 
+void OnlineNnet2FeaturePipeline::GetCmvnState(OnlineCmvnState *cmvn_state) {
+  int32 frame = cmvn_->NumFramesReady() - 1;
+  // the following call will crash if no frames are ready.
+  cmvn_->GetState(frame, cmvn_state);
+}
+void OnlineNnet2FeaturePipeline::FreezeCmvn() {
+  cmvn_->Freeze(cmvn_->NumFramesReady() - 1);
+}
 
+//zhangfeifan end
+//析构函数
 OnlineNnet2FeaturePipeline::~OnlineNnet2FeaturePipeline() {
   // Note: the delete command only deletes pointers that are non-NULL.  Not all
   // of the pointers below will be non-NULL.
   // Some of the online-feature pointers are just copies of other pointers,
   // and we do have to avoid deleting them in those cases.
-  if (final_feature_ != feature_plus_optional_pitch_)
+  if (final_feature_ != feature_plus_optional_pitch_) {
     delete final_feature_;
+  }
   delete ivector_feature_;
-  if (feature_plus_optional_pitch_ != base_feature_)
+  if (feature_plus_optional_pitch_ != base_feature_) {
+    cmvn_ = NULL;
     delete feature_plus_optional_pitch_;
+  }
   delete pitch_feature_;
   delete pitch_;
+  delete cmvn_;//zhangfeifan，没有判断是否有pitch，有必要吗？
   delete base_feature_;
 }
 
