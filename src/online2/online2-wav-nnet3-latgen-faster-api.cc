@@ -228,8 +228,9 @@ bool Online2WavNnet3LatgenDecoder::Decode(
                                               &delta_weights);
             feature_pipeline.IvectorFeature()->UpdateFrameWeights(delta_weights);
         }
-
+        clock_t start = clock();
         decoder.AdvanceDecoding();
+		KALDI_LOG << "decoder.AdvanceDecoding used: " << 1.0 * (clock() - start) / CLOCKS_PER_SEC;
 
         if (do_endpointing && decoder.EndpointDetected(endpoint_opts)) {
             break;
@@ -313,6 +314,8 @@ Online2WavNnet3LatgenDecoder::Online2WavNnet3LatgenDecoder
   parameters.push_back(copy_cstr(frames_per_trunk));
   std::string acoustic_scale = "--acoustic-scale=" + std::to_string(config.acoustic_scale);
   parameters.push_back(copy_cstr(acoustic_scale));
+  parameters.push_back("frame-subsampling-factor=3");
+
 
   KALDI_LOG << "Loading fst::Fst<fst::StdArc> decode_fst from " << config.fst_in;
   env.decode_fst = fst::ReadFstKaldiGeneric(config.fst_in);
