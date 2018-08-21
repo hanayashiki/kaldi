@@ -363,6 +363,8 @@ DecodingResult Online2WavNnet3LatgenDecoder::GetResult(
   if (!Decode(argc, argv, &result, speech_id, wave_stream)) {
     KALDI_LOG << "GetResult: Something is wrong with speech " << speech_id;
     result.good = false;
+  } else {
+	result.good = true;
   }
 
   result.time_used = 1.0 * (clock() - decode_start) / CLOCKS_PER_SEC; 
