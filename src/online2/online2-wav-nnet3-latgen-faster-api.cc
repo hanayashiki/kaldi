@@ -158,7 +158,6 @@ bool Online2WavNnet3LatgenDecoder::Decode(
 
     WaveHolder wave_holder;
     if (!wave_holder.Read(wave_stream)) {
-        KALDI_ERR << "Bad wave_stream: " << speech_id;
         result->good = false;
         result->message += "the wav file is broken or not supported\n";
         throw std::runtime_error("bad wave");
